@@ -21,6 +21,7 @@ func (tc *Client) ColCreate(name string, numParts int) error {
 
 // Get all collection information (collection name VS number of partitions).
 func (tc *Client) ColAll() (all map[string]int, err error) {
+	all = make(map[string]int)
 	err = tc.Rpc.Call("Server.ColAll", false, &all)
 	return
 }

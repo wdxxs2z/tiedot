@@ -2,15 +2,19 @@
 package network
 
 import (
+	"fmt"
 	"github.com/HouzuoGuo/tiedot/colpart"
 	"github.com/HouzuoGuo/tiedot/dstruct"
 	"github.com/HouzuoGuo/tiedot/tdlog"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/rpc"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,8 +24,9 @@ const (
 )
 
 type Task struct {
-	Fun        func()
+	Fun        func() error
 	Completion chan bool
+	Err        error
 }
 
 // Server state and structures.
@@ -60,8 +65,8 @@ func NewServer(rank, totalRank int, dbDir, tempDir string) (srv *Server, err err
 	srv = &Server{Rank: rank, TotalRank: totalRank,
 		ServerSock: path.Join(tempDir, strconv.Itoa(rank)),
 		TempDir:    tempDir, DBDir: dbDir,
-		InterRank:              make([]*Client, totalRank),
 		SchemaUpdateInProgress: true,
+		InterRank:              make([]*Client, totalRank),
 		MainLoop:               make(chan *Task, 1000)}
 	// Create server socket
 	os.Remove(srv.ServerSock)
@@ -92,35 +97,22 @@ func NewServer(rank, totalRank int, dbDir, tempDir string) (srv *Server, err err
 		}
 	}
 	// Open my partition of the database
-	if err2 := srv.Reload(false, nil); err2 != nil {
-		return nil, err2.(error)
+	if err = srv.reload(); err != nil {
+		return
 	}
-	tdlog.Printf("Rank %d: Initialization completed, listening on %s", rank, srv.ServerSock)
 	return
 }
 
-// Start task worker
-func (server *Server) Start() {
-	defer os.Remove(server.ServerSock)
-	for {
-		task := <-server.MainLoop
-		for server.SchemaUpdateInProgress {
-			time.Sleep(RETRY_EVERY * time.Millisecond)
-		}
-		task.Fun()
-		task.Completion <- true
-	}
-}
-
 // Submit a task to the server and wait till its completion.
-func (server *Server) Submit(fun func()) {
-	completion := make(chan bool, 1)
-	server.MainLoop <- &Task{Completion: completion, Fun: fun}
-	<-completion
+func (server *Server) submit(fun func() error) error {
+	task := &Task{Completion: make(chan bool, 1), Fun: fun}
+	server.MainLoop <- task
+	<-task.Completion
+	return task.Err
 }
 
 // Broadcast a message to all other servers, return true on success.
-func (srv *Server) Broadcast(call func(*Client) error, onErrResume bool) (err error) {
+func (srv *Server) broadcast(call func(*Client) error, onErrResume bool) (err error) {
 	for i, rank := range srv.InterRank {
 		if i == srv.Rank {
 			continue
@@ -132,9 +124,112 @@ func (srv *Server) Broadcast(call func(*Client) error, onErrResume bool) (err er
 	return
 }
 
+// Flush all buffers.
+func (srv *Server) flush() error {
+	for _, part := range srv.ColParts {
+		part.Flush()
+	}
+	for _, htMap := range srv.Htables {
+		for _, ht := range htMap {
+			ht.File.Flush()
+		}
+	}
+	return nil
+}
+
+// (Re)load my partition in the entire database.
+func (srv *Server) reload() (err error) {
+	srv.SchemaUpdateInProgress = true
+	defer func() {
+		srv.SchemaUpdateInProgress = false
+		tdlog.Printf("Rank %d: Reload completed", srv.Rank)
+	}()
+	// Save whatever I already have, and get rid of everything
+	srv.flush()
+	srv.ColNumParts = make(map[string]int)
+	srv.ColIndexPath = make(map[string][][]string)
+	srv.ColIndexPathStr = make(map[string][]string)
+	srv.ColParts = make(map[string]*colpart.Partition)
+	srv.Htables = make(map[string]map[string]*dstruct.HashTable)
+	// Read the DB directory
+	files, err := ioutil.ReadDir(srv.DBDir)
+	if err != nil {
+		return
+	}
+	for _, f := range files {
+		// Sub-directories are collections
+		if f.IsDir() {
+			// Read the "numchunks" file - its should contain a positive integer in the content
+			var numchunksFH *os.File
+			colName := f.Name()
+			numchunksFH, err = os.OpenFile(path.Join(srv.DBDir, colName, NUMCHUNKS_FILENAME), os.O_CREATE|os.O_RDWR, 0600)
+			defer numchunksFH.Close()
+			if err != nil {
+				return
+			}
+			numchunksContent, err := ioutil.ReadAll(numchunksFH)
+			if err != nil {
+				panic(err)
+			}
+			numchunks, err := strconv.Atoi(string(numchunksContent))
+			if err != nil || numchunks < 1 {
+				tdlog.Panicf("Rank %d: Cannot figure out number of chunks for collection %s, manually repair it maybe? %v", srv.Rank, srv.DBDir, err)
+			}
+			srv.ColNumParts[colName] = numchunks
+			srv.ColIndexPath[colName] = make([][]string, 0, 0)
+			srv.ColIndexPathStr[colName] = make([]string, 0, 0)
+			// Abort the program if total number of processes is not enough for a collection
+			if srv.TotalRank < numchunks {
+				panic(fmt.Sprintf("Please start at least %d processes, because collection %s has %d partitions", numchunks, colName, numchunks))
+			}
+			colDir := path.Join(srv.DBDir, colName)
+			if srv.Rank < numchunks {
+				tdlog.Printf("Rank %d: I am going to open my partition in %s", srv.Rank, f.Name())
+				// Open data partition
+				part, err := colpart.OpenPart(path.Join(colDir, CHUNK_DIRNAME_MAGIC+strconv.Itoa(srv.Rank)))
+				if err != nil {
+					return err
+				}
+				// Put the partition into server structure
+				srv.ColParts[colName] = part
+				srv.Htables[colName] = make(map[string]*dstruct.HashTable)
+			}
+			// Look for indexes in the collection
+			walker := func(_ string, info os.FileInfo, err2 error) error {
+				if err2 != nil {
+					tdlog.Error(err)
+					return nil
+				}
+				if info.IsDir() {
+					switch {
+					case strings.HasPrefix(info.Name(), HASHTABLE_DIRNAME_MAGIC):
+						// Figure out indexed path - including the partition number
+						indexPathStr := info.Name()[len(HASHTABLE_DIRNAME_MAGIC):]
+						indexPath := strings.Split(indexPathStr, INDEX_PATH_SEP)
+						// Put the schema into server structures
+						srv.ColIndexPathStr[colName] = append(srv.ColIndexPathStr[colName], indexPathStr)
+						srv.ColIndexPath[colName] = append(srv.ColIndexPath[colName], indexPath)
+						if srv.Rank < numchunks {
+							tdlog.Printf("Rank %d: I am going to open my partition in hashtable %s", srv.Rank, info.Name())
+							ht, err := dstruct.OpenHash(path.Join(colDir, info.Name(), strconv.Itoa(srv.Rank)), indexPath)
+							if err != nil {
+								return err
+							}
+							srv.Htables[colName][indexPathStr] = ht
+						}
+					}
+				}
+				return nil
+			}
+			err = filepath.Walk(colDir, walker)
+		}
+	}
+	return
+}
+
 // Shutdown server and delete domain socket file.
 func (srv *Server) Shutdown(_ bool, _ *bool) error {
-	srv.Broadcast(func(client *Client) error {
+	srv.broadcast(func(client *Client) error {
 		client.ShutdownServer()
 		return nil
 	}, true)
@@ -143,4 +238,18 @@ func (srv *Server) Shutdown(_ bool, _ *bool) error {
 	tdlog.Printf("Rank %d: Shutdown upon client request", srv.Rank)
 	os.Exit(0)
 	return nil
+}
+
+// Start task worker.
+func (server *Server) Start() {
+	tdlog.Printf("Rank %d: Now serving requests", server.Rank)
+	defer os.Remove(server.ServerSock)
+	for {
+		task := <-server.MainLoop
+		for server.SchemaUpdateInProgress {
+			time.Sleep(RETRY_EVERY * time.Millisecond)
+		}
+		task.Err = task.Fun()
+		task.Completion <- true
+	}
 }

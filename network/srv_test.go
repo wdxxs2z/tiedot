@@ -42,8 +42,9 @@ func TestNewServerTaskSubmit(t *testing.T) {
 		}
 	}
 	var sideEffect bool
-	srvs[0].Submit(func() {
+	srvs[0].submit(func() error {
 		sideEffect = true
+		return nil
 	})
 	if !sideEffect {
 		t.Fatal("wrong result")

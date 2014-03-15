@@ -15,10 +15,10 @@ import (
 )
 
 /*
- The following test conditions are coded in runtd script:
- - there are 4 IPC test servers and 4 clients
- - servers create socket files in /tmp/tiedot_test_ipc_tmp
- - client runs 4 GOMAXPROCS
+The following test conditions are coded in runtd script:
+- there are 4 IPC test servers and 4 clients
+- servers create socket files in /tmp/tiedot_test_ipc_tmp
+- client runs 4 GOMAXPROCS
 */
 const NUM_SERVERS = 4
 
