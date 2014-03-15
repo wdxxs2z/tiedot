@@ -2,10 +2,9 @@
 package network
 
 import (
-	"bufio"
 	"github.com/HouzuoGuo/tiedot/tdlog"
 	"math/rand"
-	"net"
+	"net/rpc"
 	"path"
 	"strconv"
 	"sync"
@@ -16,9 +15,7 @@ import (
 type Client struct {
 	SrvAddr, IPCSrvTmpDir string
 	SrvRank               int
-	In                    *bufio.Reader
-	Out                   *bufio.Writer
-	Conn                  *net.Conn
+	Rpc                   *rpc.Client
 	Mutex                 *sync.Mutex
 }
 
@@ -27,18 +24,17 @@ func NewClient(ipcSrvTmpDir string, rank int) (tc *Client, err error) {
 	// It is very important for both client and server to initialize random seed
 	rand.Seed(time.Now().UnixNano())
 	addr := path.Join(ipcSrvTmpDir, strconv.Itoa(rank))
-	conn, err := net.Dial("unix", addr)
+	rpcClient, err := rpc.Dial("unix", addr)
 	if err != nil {
 		return
 	}
-	tc = &Client{SrvAddr: addr, IPCSrvTmpDir: ipcSrvTmpDir, SrvRank: rank,
-		In: bufio.NewReader(conn), Out: bufio.NewWriter(conn), Conn: &conn,
+	tc = &Client{SrvAddr: addr, IPCSrvTmpDir: ipcSrvTmpDir, SrvRank: rank, Rpc: rpcClient,
 		Mutex: new(sync.Mutex)}
 	return
 }
 
 // Close the connection, shutdown client. Remember to call this!
 func (tc *Client) ShutdownClient() {
-	(*tc.Conn).Close()
+	(*tc.Rpc).Close()
 	tdlog.Printf("Client has shutdown the connection to %s", tc.SrvAddr)
 }

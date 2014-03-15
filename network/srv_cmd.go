@@ -25,17 +25,17 @@ const (
 )
 
 // Reload collection configurations.
-func (server *Server) Reload(_ []string) (err interface{}) {
-	server.SchemaUpdateInProgress = true
+func (srv *Server) Reload(_ bool, _ *bool) (err error) {
+	srv.SchemaUpdateInProgress = true
 	// Save whatever I already have, and get rid of everything
-	server.FlushAll(nil)
-	server.ColNumParts = make(map[string]int)
-	server.ColIndexPath = make(map[string][][]string)
-	server.ColIndexPathStr = make(map[string][]string)
-	server.ColParts = make(map[string]*colpart.Partition)
-	server.Htables = make(map[string]map[string]*dstruct.HashTable)
+	srv.FlushAll(false, nil)
+	srv.ColNumParts = make(map[string]int)
+	srv.ColIndexPath = make(map[string][][]string)
+	srv.ColIndexPathStr = make(map[string][]string)
+	srv.ColParts = make(map[string]*colpart.Partition)
+	srv.Htables = make(map[string]map[string]*dstruct.HashTable)
 	// Read the DB directory
-	files, err := ioutil.ReadDir(server.DBDir)
+	files, err := ioutil.ReadDir(srv.DBDir)
 	if err != nil {
 		return
 	}
@@ -45,7 +45,7 @@ func (server *Server) Reload(_ []string) (err interface{}) {
 			// Read the "numchunks" file - its should contain a positive integer in the content
 			var numchunksFH *os.File
 			colName := f.Name()
-			numchunksFH, err = os.OpenFile(path.Join(server.DBDir, colName, NUMCHUNKS_FILENAME), os.O_CREATE|os.O_RDWR, 0600)
+			numchunksFH, err = os.OpenFile(path.Join(srv.DBDir, colName, NUMCHUNKS_FILENAME), os.O_CREATE|os.O_RDWR, 0600)
 			defer numchunksFH.Close()
 			if err != nil {
 				return
@@ -56,26 +56,26 @@ func (server *Server) Reload(_ []string) (err interface{}) {
 			}
 			numchunks, err := strconv.Atoi(string(numchunksContent))
 			if err != nil || numchunks < 1 {
-				tdlog.Panicf("Rank %d: Cannot figure out number of chunks for collection %s, manually repair it maybe? %v", server.Rank, server.DBDir, err)
+				tdlog.Panicf("Rank %d: Cannot figure out number of chunks for collection %s, manually repair it maybe? %v", srv.Rank, srv.DBDir, err)
 			}
-			server.ColNumParts[colName] = numchunks
-			server.ColIndexPath[colName] = make([][]string, 0, 0)
-			server.ColIndexPathStr[colName] = make([]string, 0, 0)
+			srv.ColNumParts[colName] = numchunks
+			srv.ColIndexPath[colName] = make([][]string, 0, 0)
+			srv.ColIndexPathStr[colName] = make([]string, 0, 0)
 			// Abort the program if total number of processes is not enough for a collection
-			if server.TotalRank < numchunks {
+			if srv.TotalRank < numchunks {
 				panic(fmt.Sprintf("Please start at least %d processes, because collection %s has %d partitions", numchunks, colName, numchunks))
 			}
-			colDir := path.Join(server.DBDir, colName)
-			if server.Rank < numchunks {
-				tdlog.Printf("Rank %d: I am going to open my partition in %s", server.Rank, f.Name())
+			colDir := path.Join(srv.DBDir, colName)
+			if srv.Rank < numchunks {
+				tdlog.Printf("Rank %d: I am going to open my partition in %s", srv.Rank, f.Name())
 				// Open data partition
-				part, err := colpart.OpenPart(path.Join(colDir, CHUNK_DIRNAME_MAGIC+strconv.Itoa(server.Rank)))
+				part, err := colpart.OpenPart(path.Join(colDir, CHUNK_DIRNAME_MAGIC+strconv.Itoa(srv.Rank)))
 				if err != nil {
 					return err
 				}
 				// Put the partition into server structure
-				server.ColParts[colName] = part
-				server.Htables[colName] = make(map[string]*dstruct.HashTable)
+				srv.ColParts[colName] = part
+				srv.Htables[colName] = make(map[string]*dstruct.HashTable)
 			}
 			// Look for indexes in the collection
 			walker := func(_ string, info os.FileInfo, err2 error) error {
@@ -90,15 +90,15 @@ func (server *Server) Reload(_ []string) (err interface{}) {
 						indexPathStr := info.Name()[len(HASHTABLE_DIRNAME_MAGIC):]
 						indexPath := strings.Split(indexPathStr, INDEX_PATH_SEP)
 						// Put the schema into server structures
-						server.ColIndexPathStr[colName] = append(server.ColIndexPathStr[colName], indexPathStr)
-						server.ColIndexPath[colName] = append(server.ColIndexPath[colName], indexPath)
-						if server.Rank < numchunks {
-							tdlog.Printf("Rank %d: I am going to open my partition in hashtable %s", server.Rank, info.Name())
-							ht, err := dstruct.OpenHash(path.Join(colDir, info.Name(), strconv.Itoa(server.Rank)), indexPath)
+						srv.ColIndexPathStr[colName] = append(srv.ColIndexPathStr[colName], indexPathStr)
+						srv.ColIndexPath[colName] = append(srv.ColIndexPath[colName], indexPath)
+						if srv.Rank < numchunks {
+							tdlog.Printf("Rank %d: I am going to open my partition in hashtable %s", srv.Rank, info.Name())
+							ht, err := dstruct.OpenHash(path.Join(colDir, info.Name(), strconv.Itoa(srv.Rank)), indexPath)
 							if err != nil {
 								return err
 							}
-							server.Htables[colName][indexPathStr] = ht
+							srv.Htables[colName][indexPathStr] = ht
 						}
 					}
 				}
@@ -107,12 +107,12 @@ func (server *Server) Reload(_ []string) (err interface{}) {
 			err = filepath.Walk(colDir, walker)
 		}
 	}
-	server.SchemaUpdateInProgress = false
-	return nil
+	srv.SchemaUpdateInProgress = false
+	return
 }
 
 // Call flush on all mapped files.
-func (srv *Server) FlushAll(_ []string) (_ interface{}) {
+func (srv *Server) FlushAll(_ bool, _ *bool) error {
 	for _, part := range srv.ColParts {
 		part.Flush()
 	}
@@ -125,69 +125,77 @@ func (srv *Server) FlushAll(_ []string) (_ interface{}) {
 }
 
 // Create a collection.
-func (srv *Server) ColCreate(params []string) (err interface{}) {
-	colName := params[1]
-	numParts := params[2]
-	// Check input parameters
-	numPartsI, err := strconv.Atoi(numParts)
-	if err != nil {
-		return
-	}
-	if numPartsI > srv.TotalRank {
-		return errors.New(fmt.Sprintf("(ColCreate %s) There are not enough processes running", colName))
+type ColCreateParams struct {
+	ColName  string
+	NumParts int
+}
+
+func (srv *Server) ColCreate(in ColCreateParams, _ *bool) (err error) {
+	if in.NumParts > srv.TotalRank {
+		return errors.New(fmt.Sprintf("(ColCreate %s) There are not enough processes running", in.ColName))
 	}
 	// Make new files and directories for the collection
-	if err = os.MkdirAll(path.Join(srv.DBDir, colName), 0700); err != nil {
+	if err = os.MkdirAll(path.Join(srv.DBDir, in.ColName), 0700); err != nil {
 		return
 	}
-	if err = ioutil.WriteFile(path.Join(srv.DBDir, colName, NUMCHUNKS_FILENAME), []byte(numParts), 0600); err != nil {
+	if err = ioutil.WriteFile(path.Join(srv.DBDir, in.ColName, NUMCHUNKS_FILENAME), []byte(strconv.Itoa(in.NumParts)), 0600); err != nil {
 		return
 	}
 	// Reload my config
-	if err = srv.Reload(nil); err != nil {
+	if err = srv.Reload(false, nil); err != nil {
 		return
 	}
 	// Inform other ranks to reload their config
-	if !srv.BroadcastAway(RELOAD, true, false) {
-		return errors.New(fmt.Sprintf("(ColCreate %s) Failed to reload configuration", colName))
+	if err = srv.Broadcast(func(client *Client) error {
+		client.Reload()
+		return nil
+	}, false); err != nil {
+		return errors.New(fmt.Sprintf("(ColCreate %s) Failed to reload configuration: %v", in.ColName, err))
 	}
-	return nil
+	return
 }
 
 // Return all collection name VS number of partitions in JSON.
-func (srv *Server) ColAll(_ []string) (neverErr interface{}) {
-	return srv.ColNumParts
+func (srv *Server) ColAll(_ bool, out *map[string]int) (neverErr error) {
+	out = &srv.ColNumParts
+	return
 }
 
 // Rename a collection.
-func (srv *Server) ColRename(params []string) (err interface{}) {
-	oldName := params[1]
-	newName := params[2]
+type ColRenameParams struct {
+	OldName, NewName string
+}
+
+func (srv *Server) ColRename(in ColRenameParams, _ *bool) (err error) {
 	// Check input names
-	if oldName == newName {
-		return errors.New(fmt.Sprintf("(ColRename %s %s) New name may not be the same as old name", oldName, newName))
+	if in.OldName == in.NewName {
+		return errors.New(fmt.Sprintf("(ColRename %s %s) New name may not be the same as old name", in.OldName, in.NewName))
 	}
-	if _, alreadyExists := srv.ColNumParts[newName]; alreadyExists {
-		return errors.New(fmt.Sprintf("(ColRename %s %s) New name is already used", oldName, newName))
+	if _, alreadyExists := srv.ColNumParts[in.NewName]; alreadyExists {
+		return errors.New(fmt.Sprintf("(ColRename %s %s) New name is already used", in.OldName, in.NewName))
 	}
-	if _, exists := srv.ColNumParts[oldName]; !exists {
-		return errors.New(fmt.Sprintf("(ColRename %s %s) Old name does not exist", oldName, newName))
+	if _, exists := srv.ColNumParts[in.OldName]; !exists {
+		return errors.New(fmt.Sprintf("(ColRename %s %s) Old name does not exist", in.OldName, in.NewName))
 	}
 	// Rename collection directory
-	if err = os.Rename(path.Join(srv.DBDir, oldName), path.Join(srv.DBDir, newName)); err != nil {
+	if err = os.Rename(path.Join(srv.DBDir, in.OldName), path.Join(srv.DBDir, in.NewName)); err != nil {
 		return
 	}
 	// Reload myself and inform other ranks to reload their config
-	srv.Reload(nil)
-	if !srv.BroadcastAway(RELOAD, true, false) {
-		return errors.New(fmt.Sprintf("(ColRename %s %s) Failed to reload configuration", oldName, newName))
+	if err = srv.Reload(false, nil); err != nil {
+		return err
 	}
-	return nil
+	if err = srv.Broadcast(func(client *Client) error {
+		client.Reload()
+		return nil
+	}, false); err != nil {
+		return errors.New(fmt.Sprintf("(ColRename %s %s) Failed to reload configuration: %v", in.OldName, in.NewName, err))
+	}
+	return
 }
 
 // Drop a collection.
-func (srv *Server) ColDrop(params []string) (err interface{}) {
-	colName := params[1]
+func (srv *Server) ColDrop(colName string, _ *bool) (err error) {
 	// Check input name
 	if _, exists := srv.ColNumParts[colName]; !exists {
 		return errors.New(fmt.Sprintf("(ColDrop %s) Collection does not exist", colName))
@@ -197,246 +205,229 @@ func (srv *Server) ColDrop(params []string) (err interface{}) {
 		return
 	}
 	// Reload myself and inform other ranks to reload their config
-	srv.Reload(nil)
-	if !srv.BroadcastAway(RELOAD, true, false) {
-		return errors.New(fmt.Sprintf("(ColDrop %s) Failed to reload configuration", colName))
+	if err = srv.Reload(false, nil); err != nil {
+		return
 	}
-	return nil
+	if err = srv.Broadcast(func(client *Client) error {
+		client.Reload()
+		return nil
+	}, false); err != nil {
+		return errors.New(fmt.Sprintf("(ColDrop %s) Failed to reload configuration: %v", colName, err))
+	}
+	return
 }
 
-// Ping, Ping1, PingJS are for testing purpose, they do not manipulate any data.
-func (srv *Server) Ping(_ []string) (strNoError interface{}) {
-	return ACK
-}
-func (srv *Server) Ping1(_ []string) (uint64NoError interface{}) {
-	return uint64(1)
-}
-func (srv *Server) PingJS(_ []string) (jsonNoError interface{}) {
-	return []string{ACK, ACK}
-}
-func (srv *Server) PingErr(_ []string) (mustBErr interface{}) {
-	return errors.New("this is an error")
+// Only for testing client-server connection.
+func (srv *Server) Ping(_ bool, _ *bool) (neverErr error) {
+	return nil
 }
 
 // Insert a document into my partition of the collection.
-func (srv *Server) DocInsert(params []string) (strOrErr interface{}) {
-	colName := params[1]
-	jsonDoc := params[2]
+type DocInsertParams struct {
+	ColName, JsonDoc string
+}
+
+func (srv *Server) DocInsert(in DocInsertParams, out *uint64) (err error) {
 	// Check input collection name and JSON document string
-	if col, exists := srv.ColParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(DocInsert %s) My rank does not own a partition of the collection", colName))
+	if col, exists := srv.ColParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(DocInsert %s) My rank does not own a partition of the collection", in.ColName))
 	} else {
 		var doc map[string]interface{}
-		if strOrErr = json.Unmarshal([]byte(jsonDoc), &doc); strOrErr != nil {
-			return errors.New(fmt.Sprintf("(DocInsert %s) Input JSON is malformed", colName))
+		if err = json.Unmarshal([]byte(in.JsonDoc), &doc); err != nil {
+			return
 		}
 		// Insert the document into my partition
-		var newDocID uint64
-		if newDocID, strOrErr = col.Insert(doc); strOrErr != nil {
-			return errors.New(fmt.Sprintf("(DocInsert %s) %v", colName, strOrErr))
+		if *out, err = col.Insert(doc); err != nil {
+			return
 		}
-		return strconv.FormatUint(newDocID, 10)
 	}
+	return
 }
 
 // Get a document from my partition of the collection.
-func (srv *Server) DocGet(params []string) (strOrErr interface{}) {
-	colName := params[1]
-	id := params[2]
+type DocGetParams struct {
+	ColName string
+	ID      uint64
+}
+
+func (srv *Server) DocGet(in DocGetParams, out *string) (err error) {
 	// Check input collection name and ID
-	idInt, strOrErr := strconv.ParseUint(id, 10, 64)
-	if strOrErr != nil {
-		return errors.New(fmt.Sprintf("(DocGet %s) %s is not a valid document ID", colName, id))
-	}
-	if col, exists := srv.ColParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(DocGet %s) My rank does not own a partition of the collection", colName))
+	if col, exists := srv.ColParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(DocGet %s) My rank does not own a partition of the collection", in.ColName))
 	} else {
 		// Read document from partition and return
-		if jsonStr, err := col.ReadStr(idInt); err != nil {
-			return err
-		} else {
-			return jsonStr
-		}
-	}
-}
-
-// Update a document in my partition.
-func (srv *Server) DocUpdate(params []string) (strOrErr interface{}) {
-	colName := params[1]
-	id := params[2]
-	jsonDoc := params[3]
-	// Check input collection name, new document JSON, and UID
-	idInt, strOrErr := strconv.ParseUint(id, 10, 64)
-	if strOrErr != nil {
-		return errors.New(fmt.Sprintf("(DocUpdate %s) %s is not a valid document ID", colName, id))
-	}
-	if col, exists := srv.ColParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(DocUpdate %s) My rank does not own a partition of the collection", colName))
-	} else {
-		var doc map[string]interface{}
-		if strOrErr = json.Unmarshal([]byte(jsonDoc), &doc); strOrErr != nil {
-			return errors.New(fmt.Sprintf("(DocUpdate %s) Input JSON is malformed", colName))
-		}
-		doc[uid.PK_NAME] = id // client is not supposed to change UID, just to make sure
-		var newDocID uint64
-		if newDocID, strOrErr = col.Update(idInt, doc); strOrErr != nil {
+		if *out, err = col.ReadStr(in.ID); err != nil {
 			return
 		}
-		return strconv.FormatUint(newDocID, 10)
 	}
+	return
 }
 
 // Update a document in my partition.
-func (srv *Server) DocDelete(params []string) (err interface{}) {
-	colName := params[1]
-	id := params[2]
-	// Check input collection name, new document JSON, and UID
-	idInt, err := strconv.ParseUint(id, 10, 64)
-	if err != nil {
-		return errors.New(fmt.Sprintf("(DocDelete %s) %s is not a valid document ID", colName, id))
-	}
-	if col, exists := srv.ColParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(DocDelete %s) My rank does not own a partition of the collection", colName))
+type DocUpdateParams struct {
+	ColName, JsonDoc string
+	ID               uint64
+}
+
+func (srv *Server) DocUpdate(in DocUpdateParams, out *uint64) (err error) {
+	// Check input collection name, new document JSON
+	if col, exists := srv.ColParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(DocUpdate %s) My rank does not own a partition of the collection", in.ColName))
 	} else {
-		col.Delete(idInt)
+		var doc map[string]interface{}
+		if err = json.Unmarshal([]byte(in.JsonDoc), &doc); err != nil {
+			return
+		}
+		doc[uid.PK_NAME] = strconv.FormatUint(in.ID, 10) // client is not supposed to change UID, just to make sure
+		if *out, err = col.Update(in.ID, doc); err != nil {
+			return
+		}
 	}
-	return nil
+	return
+}
+
+// Update a document in my partition.
+type DocDeleteParams struct {
+	ColName string
+	ID      uint64
+}
+
+func (srv *Server) DocDelete(in DocDeleteParams, _ *bool) (err interface{}) {
+	// Check input collection name, new document JSON
+	if col, exists := srv.ColParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(DocDelete %s) My rank does not own a partition of the collection", in.ColName))
+	} else {
+		col.Delete(in.ID)
+	}
+	return
 }
 
 // Put a key-value pair into hash table.
-func (srv *Server) HTPut(params []string) (err interface{}) {
-	colName := params[1]
-	htName := params[2]
-	key := params[3]
-	val := params[4]
-	if col, exists := srv.Htables[colName]; !exists {
-		return errors.New(fmt.Sprintf("(HTPut %s) My rank %d does not own a partition of the hash table", colName, srv.Rank))
+type HTPutParams struct {
+	ColName, HTName string
+	Key, Val        uint64
+}
+
+func (srv *Server) HTPut(in HTPutParams, _ *bool) (err error) {
+	if col, exists := srv.Htables[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(HTPut %s) My rank %d does not own a partition of the hash table", in.ColName, srv.Rank))
 	} else {
-		if ht, exists := col[htName]; !exists {
-			return errors.New(fmt.Sprintf("(HTPut %s) Hash table %s does not exist", colName, htName))
+		if ht, exists := col[in.HTName]; !exists {
+			return errors.New(fmt.Sprintf("(HTPut %s) Hash table %s does not exist", in.ColName, in.HTName))
 		} else {
-			var keyInt, valInt uint64
-			keyInt, err = strconv.ParseUint(key, 10, 64)
-			if err != nil {
-				return
-			}
-			valInt, err = strconv.ParseUint(val, 10, 64)
-			if err != nil {
-				return
-			}
-			ht.Put(keyInt, valInt)
+			ht.Put(in.Key, in.Val)
 		}
 	}
-	return nil
+	return
 }
 
 // Get a key's associated values.
-func (srv *Server) HTGet(params []string) (strOrErr interface{}) {
-	colName := params[1]
-	htName := params[2]
-	key := params[3]
-	limit := params[4]
-	if col, exists := srv.Htables[colName]; !exists {
-		return errors.New(fmt.Sprintf("(HTGet %s) My rank does not own a partition of the hash table", colName))
+type HTGetParams struct {
+	ColName, HTName string
+	Key, Limit      uint64
+}
+
+func (srv *Server) HTGet(in HTGetParams, out *[]uint64) (err error) {
+	if col, exists := srv.Htables[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(HTGet %s) My rank does not own a partition of the hash table", in.ColName))
 	} else {
-		if ht, exists := col[htName]; !exists {
-			return errors.New(fmt.Sprintf("(HTGet %s) Hash table %s does not exist", colName, htName))
+		if ht, exists := col[in.HTName]; !exists {
+			return errors.New(fmt.Sprintf("(HTGet %s) Hash table %s does not exist", in.ColName, in.HTName))
 		} else {
-			var keyInt, limitInt uint64
-			if keyInt, strOrErr = strconv.ParseUint(key, 10, 64); strOrErr != nil {
-				return
-			}
-			if limitInt, strOrErr = strconv.ParseUint(limit, 10, 64); strOrErr != nil {
-				return
-			}
-			vals := ht.Get(keyInt, limitInt)
-			resp := make([]string, len(vals))
+			vals := ht.Get(in.Key, in.Limit)
+			*out = make([]uint64, len(vals))
 			for i, val := range vals {
-				resp[i] = strconv.FormatUint(val, 10)
+				(*out)[i] = val
 			}
-			return strings.Join(resp, " ")
 		}
 	}
-	return nil
+	return
 }
 
 // Remove a key-value pair.
-func (srv *Server) HTDelete(params []string) (err interface{}) {
-	colName := params[1]
-	htName := params[2]
-	key := params[3]
-	val := params[4]
-	if col, exists := srv.Htables[colName]; !exists {
-		return errors.New(fmt.Sprintf("(HTDelete %s) My rank does not own a partition of the hash table", colName))
+type HTDeleteParams struct {
+	ColName, HTName string
+	Key, Val        uint64
+}
+
+func (srv *Server) HTDelete(in HTDeleteParams, _ *bool) (err error) {
+	if col, exists := srv.Htables[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(HTDelete %s) My rank does not own a partition of the hash table", in.ColName))
 	} else {
-		if ht, exists := col[htName]; !exists {
-			return errors.New(fmt.Sprintf("(HTDelete %s) Hash table %s does not exist", colName, htName))
+		if ht, exists := col[in.HTName]; !exists {
+			return errors.New(fmt.Sprintf("(HTDelete %s) Hash table %s does not exist", in.ColName, in.HTName))
 		} else {
-			var keyInt, valInt uint64
-			if keyInt, err = strconv.ParseUint(key, 10, 64); err != nil {
-				return
-			}
-			if valInt, err = strconv.ParseUint(val, 10, 64); err != nil {
-				return
-			}
-			ht.Remove(keyInt, valInt)
+			ht.Remove(in.Key, in.Val)
 		}
 	}
-	return nil
+	return
 }
 
 // Create an index.
-func (srv *Server) IdxCreate(params []string) (err interface{}) {
-	colName := params[1]
-	idxPath := params[2]
+type IdxCreateParams struct {
+	ColName, IdxPath string
+}
+
+func (srv *Server) IdxCreate(in IdxCreateParams, _ *bool) (err error) {
 	// Verify that the collection exists
-	if _, exists := srv.ColNumParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(IdxCreate %s) Collection does not exist", colName))
+	if _, exists := srv.ColNumParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(IdxCreate %s) Collection does not exist", in.ColName))
 	}
 	// Create hash table directory
-	if err = os.MkdirAll(path.Join(srv.DBDir, colName, HASHTABLE_DIRNAME_MAGIC+idxPath), 0700); err != nil {
+	if err = os.MkdirAll(path.Join(srv.DBDir, in.ColName, HASHTABLE_DIRNAME_MAGIC+in.IdxPath), 0700); err != nil {
 		return
 	}
 	// Reload my config
-	if err = srv.Reload(nil); err != nil {
+	if err = srv.Reload(false, nil); err != nil {
 		return
 	}
 	// Inform other ranks to reload their config
-	if !srv.BroadcastAway(RELOAD, true, false) {
-		return errors.New(fmt.Sprintf("(IdxCreate %s) Failed to reload configuration", colName))
+	if err = srv.Broadcast(func(client *Client) error {
+		client.Reload()
+		return nil
+	}, false); err != nil {
+		return errors.New(fmt.Sprintf("(IdxCreate %s) Failed to reload configuration: %v", in.ColName, err))
 	}
-	return nil
+	return
 }
 
 // Return list of all indexes
-func (srv *Server) IdxAll(params []string) (jsonOrErr interface{}) {
-	colName := params[1]
+func (srv *Server) IdxAll(colName string, out *[]string) (err error) {
 	if paths, exists := srv.ColIndexPathStr[colName]; exists {
-		return paths
+		*out = make([]string, len(paths))
+		for i, path := range paths {
+			(*out)[i] = path
+		}
 	} else {
 		return errors.New(fmt.Sprintf("(IdxAll %s) Collection does not exist", colName))
 	}
+	return
 }
 
 // Drop an index.
-func (srv *Server) IdxDrop(params []string) (err interface{}) {
-	colName := params[1]
-	idxPath := params[2]
+type IdxDropParams struct {
+	ColName, IdxPath string
+}
+
+func (srv *Server) IdxDrop(in IdxDropParams, _ *bool) (err error) {
 	// Verify that the collection exists
-	if _, exists := srv.ColNumParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(IdxDrop %s) Collection does not exist", colName))
+	if _, exists := srv.ColNumParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(IdxDrop %s) Collection does not exist", in.ColName))
 	}
 	// rm -rf index_directory
-	if err = os.RemoveAll(path.Join(srv.DBDir, colName, HASHTABLE_DIRNAME_MAGIC+idxPath)); err != nil {
+	if err = os.RemoveAll(path.Join(srv.DBDir, in.ColName, HASHTABLE_DIRNAME_MAGIC+in.IdxPath)); err != nil {
 		return
 	}
 	// Reload my config
-	if err = srv.Reload(nil); err != nil {
+	if err = srv.Reload(false, nil); err != nil {
 		return
 	}
 	// Inform other ranks to reload their config
-	if !srv.BroadcastAway(RELOAD, true, false) {
-		return errors.New(fmt.Sprintf("(IdxDrop %s) Failed to reload configuration", colName))
+	if err = srv.Broadcast(func(client *Client) error {
+		client.Reload()
+		return nil
+	}, false); err != nil {
+		return errors.New(fmt.Sprintf("(IdxDrop %s) Failed to reload configuration: %v", in.ColName, err))
 	}
 	return nil
 }
@@ -492,105 +483,99 @@ func (srv *Server) UnindexDoc(colName string, docID uint64, doc interface{}) (er
 }
 
 // Insert a document and maintain hash index.
-func (srv *Server) ColInsert(params []string) (uint64OrErr interface{}) {
-	var err error
-	colName := params[1]
-	doc := params[2]
+type ColInsertParams struct {
+	ColName, Doc string
+}
+
+func (srv *Server) ColInsert(in ColInsertParams, out *uint64) (err error) {
 	// Validate parameters
-	if _, exists := srv.ColNumParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(ColInsert %s) Collection does not exist", colName))
+	if _, exists := srv.ColNumParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(ColInsert %s) Collection does not exist", in.ColName))
 	}
 	var jsDoc map[string]interface{}
-	if err = json.Unmarshal([]byte(doc), &jsDoc); err != nil || jsDoc == nil {
-		return errors.New(fmt.Sprintf("(ColInsert %s) Client sent malformed JSON document", colName))
+	if err = json.Unmarshal([]byte(in.Doc), &jsDoc); err != nil || jsDoc == nil {
+		return errors.New(fmt.Sprintf("(ColInsert %s) Client sent malformed JSON document", in.ColName))
 	}
 	// Allocate an ID for the document
 	docID := uid.NextUID()
 	jsDoc[uid.PK_NAME] = strconv.FormatUint(docID, 10)
 	// See where the document goes
-	partNum := int(docID % uint64(srv.ColNumParts[colName]))
+	partNum := int(docID % uint64(srv.ColNumParts[in.ColName]))
 	if partNum == srv.Rank {
 		// Oh I have it!
-		if _, err = srv.ColParts[colName].Insert(jsDoc); err != nil {
+		if _, err = srv.ColParts[in.ColName].Insert(jsDoc); err != nil {
 			return err
 		}
 	} else {
 		// Tell other rank to do it
-		if _, err = srv.InterRank[partNum].docInsert(colName, jsDoc); err != nil {
+		if _, err = srv.InterRank[partNum].docInsert(in.ColName, jsDoc); err != nil {
 			return err
 		}
 	}
-	if err := srv.IndexDoc(colName, docID, jsDoc); err != nil {
+	if err := srv.IndexDoc(in.ColName, docID, jsDoc); err != nil {
 		return err
 	}
-	return docID
+	*out = docID
+	return
 }
 
 // Get a document by its unique ID (Not physical ID).
-func (srv *Server) ColGet(params []string) (jsonOrErr interface{}) {
-	colName := params[1]
-	docID := params[2]
-	if _, exists := srv.ColNumParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(ColGet %s) Collection does not exist", colName))
+type ColGetParams struct {
+	ColName string
+	DocID   uint64
+}
+
+func (srv *Server) ColGet(in ColGetParams, out *string) (err error) {
+	if _, exists := srv.ColNumParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(ColGet %s) Collection does not exist", in.ColName))
 	}
-	idInt, err := strconv.ParseUint(docID, 10, 64)
-	if err != nil {
-		return errors.New(fmt.Sprintf("(ColGet %s) Client sent malformed JSON document", colName))
-	}
-	var doc interface{}
-	partNum := int(idInt % uint64(srv.ColNumParts[colName]))
+	partNum := int(in.DocID % uint64(srv.ColNumParts[in.ColName]))
 	if partNum == srv.Rank {
-		physID, err := srv.ColParts[colName].GetPhysicalID(idInt)
+		physID, err := srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
 		if err != nil {
-			return errors.New(fmt.Sprintf("Document %d does not exist in %s", idInt, colName))
+			return errors.New(fmt.Sprintf("Document %d does not exist in %s", in.DocID, in.ColName))
 		}
-		if err = srv.ColParts[colName].Read(physID, &doc); err != nil {
+		if *out, err = srv.ColParts[in.ColName].ReadStr(physID); err != nil {
 			return err
 		}
-		return doc
 	} else {
-		doc, err := srv.InterRank[partNum].ColGet(colName, idInt)
-		if err != nil {
-			return err
-		}
-		return doc
+		*out, err = srv.InterRank[partNum].colGetJSString(in.ColName, in.DocID)
 	}
+	return
 }
 
 // Update a document in my rank, without maintaining index index.
-func (srv *Server) ColUpdateNoIdx(params []string) (err interface{}) {
-	colName := params[1]
-	docID := params[2]
-	doc := params[3]
+type ColUpdateNoIdxParams struct {
+	ColName, Doc string
+	DocID        uint64
+}
+
+func (srv *Server) ColUpdateNoIdx(in ColUpdateNoIdxParams, _ *bool) (err error) {
 	// Validate parameters
-	if _, exists := srv.ColNumParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) Collection does not exist", colName))
-	}
-	idInt, err := strconv.ParseUint(docID, 10, 64)
-	if err != nil {
-		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) Client sent malformed ID: %s", colName, docID))
+	if _, exists := srv.ColNumParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) Collection does not exist", in.ColName))
 	}
 	var newDoc map[string]interface{}
-	if err = json.Unmarshal([]byte(doc), &newDoc); err != nil {
-		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) Client sent malformed JSON document", colName))
+	if err = json.Unmarshal([]byte(in.Doc), &newDoc); err != nil {
+		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) Client sent malformed JSON document", in.ColName))
 	}
-	partNum := int(idInt % uint64(srv.ColNumParts[colName]))
+	partNum := int(in.DocID % uint64(srv.ColNumParts[in.ColName]))
 	var originalDoc interface{}
 	if partNum != srv.Rank {
-		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) My rank does not own the document", colName))
+		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) My rank does not own the document", in.ColName))
 	}
 	// Now my rank owns the document and go ahead to update the document
 	// Make sure that client is not overwriting document ID
-	newDoc[uid.PK_NAME] = docID
+	newDoc[uid.PK_NAME] = in.DocID
 	// Read back the original document
-	partition := srv.ColParts[colName]
+	partition := srv.ColParts[in.ColName]
 	var originalPhysicalID uint64
-	originalPhysicalID, err = srv.ColParts[colName].GetPhysicalID(idInt)
+	originalPhysicalID, err = srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
 	if err == nil {
 		partition.Read(originalPhysicalID, &originalDoc)
 	} else {
 		// The original document cannot be found - so we will insert the document instead of updating it
-		tdlog.Printf("(ColUpdate %s) Cannot find the original document %d, will insert the updated document instead", idInt, colName)
+		tdlog.Printf("(ColUpdate %s) Cannot find the original document %d, will insert the updated document instead", in.DocID, in.ColName)
 	}
 	// Overwrite the document
 	if originalDoc == nil {
@@ -600,7 +585,7 @@ func (srv *Server) ColUpdateNoIdx(params []string) (err interface{}) {
 		}
 	} else {
 		// Ordinary update
-		if _, err = srv.ColParts[colName].Update(originalPhysicalID, newDoc); err != nil {
+		if _, err = srv.ColParts[in.ColName].Update(originalPhysicalID, newDoc); err != nil {
 			return
 		}
 	}
@@ -608,37 +593,35 @@ func (srv *Server) ColUpdateNoIdx(params []string) (err interface{}) {
 }
 
 // Update a document and maintain hash index.
-func (srv *Server) ColUpdate(params []string) (err interface{}) {
-	colName := params[1]
-	docID := params[2]
-	doc := params[3]
+type ColUpdateParams struct {
+	ColName, Doc string
+	DocID        uint64
+}
+
+func (srv *Server) ColUpdate(in ColUpdateParams, _ *bool) (err error) {
 	// Validate parameters
-	if _, exists := srv.ColNumParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(ColUpdate %s) Collection does not exist", colName))
-	}
-	idInt, err := strconv.ParseUint(docID, 10, 64)
-	if err != nil {
-		return errors.New(fmt.Sprintf("(ColUpdate %s) Client sent malformed ID: %s", colName, docID))
+	if _, exists := srv.ColNumParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(ColUpdate %s) Collection does not exist", in.ColName))
 	}
 	var newDoc map[string]interface{}
-	if err = json.Unmarshal([]byte(doc), &newDoc); err != nil {
-		return errors.New(fmt.Sprintf("(ColUpdate %s) Client sent malformed JSON document", colName))
+	if err = json.Unmarshal([]byte(in.Doc), &newDoc); err != nil {
+		return errors.New(fmt.Sprintf("(ColUpdate %s) Client sent malformed JSON document", in.ColName))
 	}
-	partNum := int(idInt % uint64(srv.ColNumParts[colName]))
+	partNum := int(in.DocID % uint64(srv.ColNumParts[in.ColName]))
 	var originalDoc interface{}
 	if partNum == srv.Rank {
 		// Now my rank owns the document and go ahead to update the document
 		// Make sure that client is not overwriting document ID
-		newDoc[uid.PK_NAME] = docID
+		newDoc[uid.PK_NAME] = in.DocID
 		// Read back the original document
-		partition := srv.ColParts[colName]
+		partition := srv.ColParts[in.ColName]
 		var originalPhysicalID uint64
-		originalPhysicalID, err = srv.ColParts[colName].GetPhysicalID(idInt)
+		originalPhysicalID, err = srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
 		if err == nil {
 			partition.Read(originalPhysicalID, &originalDoc)
 		} else {
 			// The original document cannot be found - so we will insert the document instead of updating it
-			tdlog.Printf("(ColUpdate %s) Cannot find the original document %d, will insert the updated document instead", idInt, colName)
+			tdlog.Printf("(ColUpdate %s) Cannot find the original document %d, will insert the updated document instead", in.DocID, in.ColName)
 		}
 		// Overwrite the document
 		if originalDoc == nil {
@@ -648,51 +631,50 @@ func (srv *Server) ColUpdate(params []string) (err interface{}) {
 			}
 		} else {
 			// Ordinary update
-			if _, err = srv.ColParts[colName].Update(originalPhysicalID, newDoc); err != nil {
+			if _, err = srv.ColParts[in.ColName].Update(originalPhysicalID, newDoc); err != nil {
 				return
 			}
 		}
 	} else {
 		// If my rank does not own the document, coordinate this update with other ranks, and to prevent deadlock...
 		// Contact other rank to get document content
-		if originalDoc, err = srv.InterRank[partNum].ColGet(colName, idInt); err != nil {
+		if originalDoc, err = srv.InterRank[partNum].ColGet(in.ColName, in.DocID); err != nil {
 			return
 		}
 		// Contact other rank to update document without maintaining index
-		if err = srv.InterRank[partNum].colUpdateNoIdx(colName, idInt, newDoc); err != nil {
+		if err = srv.InterRank[partNum].colUpdateNoIdx(in.ColName, in.DocID, newDoc); err != nil {
 			return
 		}
 	}
 	// No matter where the document is physically located at, my rank always coordinates index maintenance
-	if err = srv.UnindexDoc(colName, idInt, originalDoc); err != nil {
-		tdlog.Printf("ERROR Unindex doc %v %v %v", colName, idInt, originalDoc)
+	if err = srv.UnindexDoc(in.ColName, in.DocID, originalDoc); err != nil {
+		tdlog.Printf("ERROR Unindex doc %v %v %v", in.ColName, in.DocID, originalDoc)
 		return
 	}
-	return srv.IndexDoc(colName, idInt, newDoc)
+	return srv.IndexDoc(in.ColName, in.DocID, newDoc)
 }
 
 // Delete a document by its unique ID (Not physical ID).
-func (srv *Server) ColDeleteNoIdx(params []string) (err interface{}) {
-	colName := params[1]
-	docID := params[2]
+type ColDeleteNoIdxParams struct {
+	ColName string
+	DocID   uint64
+}
+
+func (srv *Server) ColDeleteNoIdx(in ColDeleteNoIdxParams, _ *bool) (err error) {
 	// Validate parameters
-	if _, exists := srv.ColNumParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(ColDeleteNoIdx %s) Collection does not exist", colName))
+	if _, exists := srv.ColNumParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(ColDeleteNoIdx %s) Collection does not exist", in.ColName))
 	}
-	idInt, err := strconv.ParseUint(docID, 10, 64)
-	if err != nil {
-		return errors.New(fmt.Sprintf("(ColDeleteNoIdx %s) Client sent malformed ID: %s", colName, docID))
-	}
-	partNum := int(idInt % uint64(srv.ColNumParts[colName]))
+	partNum := int(in.DocID % uint64(srv.ColNumParts[in.ColName]))
 	var originalDoc interface{}
 	if partNum != srv.Rank {
-		return errors.New(fmt.Sprintf("(ColDeleteNoIdx %s) My rank does not own the document", colName))
+		return errors.New(fmt.Sprintf("(ColDeleteNoIdx %s) My rank does not own the document", in.ColName))
 	}
 	// Now my rank owns the document and go ahead to delete the document
 	// Read back the original document
-	partition := srv.ColParts[colName]
+	partition := srv.ColParts[in.ColName]
 	var originalPhysicalID uint64
-	originalPhysicalID, err = srv.ColParts[colName].GetPhysicalID(idInt)
+	originalPhysicalID, err = srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
 	if err == nil {
 		partition.Read(originalPhysicalID, &originalDoc)
 	} else {
@@ -700,30 +682,29 @@ func (srv *Server) ColDeleteNoIdx(params []string) (err interface{}) {
 		return nil
 	}
 	// Delete the document
-	srv.ColParts[colName].Delete(originalPhysicalID)
+	srv.ColParts[in.ColName].Delete(originalPhysicalID)
 	return
 }
 
 // Delete a document by its unique ID (Not physical ID).
-func (srv *Server) ColDelete(params []string) (err interface{}) {
-	colName := params[1]
-	docID := params[2]
+type ColDeleteParams struct {
+	ColName string
+	DocID   uint64
+}
+
+func (srv *Server) ColDelete(in ColDeleteNoIdxParams, _ *bool) (err error) {
 	// Validate parameters
-	if _, exists := srv.ColNumParts[colName]; !exists {
-		return errors.New(fmt.Sprintf("(ColDelete %s) Collection does not exist", colName))
+	if _, exists := srv.ColNumParts[in.ColName]; !exists {
+		return errors.New(fmt.Sprintf("(ColDelete %s) Collection does not exist", in.ColName))
 	}
-	idInt, err := strconv.ParseUint(docID, 10, 64)
-	if err != nil {
-		return errors.New(fmt.Sprintf("(ColDelete %s) Client sent malformed ID: %s", colName, docID))
-	}
-	partNum := int(idInt % uint64(srv.ColNumParts[colName]))
+	partNum := int(in.DocID % uint64(srv.ColNumParts[in.ColName]))
 	var originalDoc interface{}
 	if partNum == srv.Rank {
 		// Now my rank owns the document and go ahead to delete the document
 		// Read back the original document
-		partition := srv.ColParts[colName]
+		partition := srv.ColParts[in.ColName]
 		var originalPhysicalID uint64
-		originalPhysicalID, err = srv.ColParts[colName].GetPhysicalID(idInt)
+		originalPhysicalID, err = srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
 		if err == nil {
 			partition.Read(originalPhysicalID, &originalDoc)
 		} else {
@@ -731,12 +712,12 @@ func (srv *Server) ColDelete(params []string) (err interface{}) {
 			return nil
 		}
 		// Delete the document
-		srv.ColParts[colName].Delete(originalPhysicalID)
+		srv.ColParts[in.ColName].Delete(originalPhysicalID)
 	} else {
-		if err = srv.InterRank[partNum].colDeleteNoIdx(colName, idInt); err != nil {
+		if err = srv.InterRank[partNum].colDeleteNoIdx(in.ColName, in.DocID); err != nil {
 			return
 		}
 	}
 	// No matter where the document is physically located at, my rank always coordinates index maintenance
-	return srv.UnindexDoc(colName, idInt, originalDoc)
+	return srv.UnindexDoc(in.ColName, in.DocID, originalDoc)
 }

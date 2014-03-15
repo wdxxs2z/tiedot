@@ -5,80 +5,77 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 )
 
+var ignore bool
+
 // Insert a document. (Use ColInsert as the public API).
-func (tc *Client) docInsert(colName string, doc map[string]interface{}) (uint64, error) {
+func (tc *Client) docInsert(colName string, doc map[string]interface{}) (id uint64, err error) {
 	if js, err := json.Marshal(doc); err != nil {
 		return 0, errors.New(fmt.Sprintf("Client cannot serialize structure %v, error: %v", doc, err))
 	} else {
-		return tc.getUint64(fmt.Sprintf("%s %s %s", DOC_INSERT, colName, string(js)))
+		err = tc.Rpc.Call("Server.DocInsert", DocInsertParams{colName, string(js)}, &id)
 	}
+	return
 }
 
 // Get a document by ID. (Use ColGet as the public API).
-func (tc *Client) docGet(colName string, id uint64) (interface{}, error) {
-	return tc.getJSON(fmt.Sprintf("%s %s %d", DOC_GET, colName, id))
+func (tc *Client) docGet(colName string, id uint64) (doc interface{}, err error) {
+	var jsonStr string
+	if err = tc.Rpc.Call("Server.DocGet", DocGetParams{colName, id}, &jsonStr); err != nil {
+		return
+	}
+	err = json.Unmarshal([]byte(jsonStr), &doc)
+	return
 }
 
 // Update a document by ID. (Use ColUpdate as the public API).
-func (tc *Client) docUpdate(colName string, id uint64, newDoc map[string]interface{}) (uint64, error) {
+func (tc *Client) docUpdate(colName string, id uint64, newDoc map[string]interface{}) (newID uint64, err error) {
 	if js, err := json.Marshal(newDoc); err != nil {
 		return 0, errors.New(fmt.Sprintf("Client cannot serialize structure %v, error: %v", newDoc, err))
 	} else {
-		return tc.getUint64(fmt.Sprintf("%s %s %d %s", DOC_UPDATE, colName, id, js))
+		err = tc.Rpc.Call("Server.DocUpdate", DocUpdateParams{colName, string(js), id}, &newID)
 	}
+	return
 }
 
 // Delete a document by ID. (Use ColDelete as the public API).
 func (tc *Client) docDelete(colName string, id uint64) error {
-	return tc.getOK(fmt.Sprintf("%s %s %d %s", DOC_DELETE, colName, id))
+	return tc.Rpc.Call("Server.DocDelete", DocDeleteParams{colName, id}, &ignore)
 }
 
 // Put a key-value pair into hash table (no corresponding public API).
 func (tc *Client) htPut(colName, indexName string, key, val uint64) error {
-	return tc.getOK(fmt.Sprintf("%s %s %s %d %d", HT_PUT, colName, indexName, key, val))
+	return tc.Rpc.Call("Server.HTPut", HTPutParams{colName, indexName, key, val}, &ignore)
 }
 
 // Put a key-value pair into hash table (no corresponding public API).
 func (tc *Client) htGet(colName, indexName string, key, limit uint64) (vals []uint64, err error) {
-	resp, err := tc.getStr(fmt.Sprintf("%s %s %s %d %d", HT_GET, colName, indexName, key, limit))
-	if err != nil {
-		return
-	}
-	// The response looks like "val1 val2 val3 ..." so let us disassemble it
-	parts := strings.Split(resp, " ")
-	vals = make([]uint64, len(parts))
-	for i := 0; i < len(parts); i++ {
-		if parts[i] == "" {
-			continue
-		}
-		if num, err := strconv.ParseUint(parts[i], 10, 64); err != nil {
-			return nil, errors.New(fmt.Sprintf("HTGet client received malformed response from server: %d, %v", len(parts), parts))
-		} else {
-			vals[i] = num
-		}
-	}
+	err = tc.Rpc.Call("Server.HTGet", HTGetParams{colName, indexName, key, limit}, &vals)
 	return
 }
 
 // Put a key-value pair into hash table (no corresponding public API).
 func (tc *Client) htDelete(colName, indexName string, key, val uint64) error {
-	return tc.getOK(fmt.Sprintf("%s %s %s %d %d", HT_DELETE, colName, indexName, key, val))
+	return tc.Rpc.Call("Server.HTDelete", HTDeleteParams{colName, indexName, key, val}, &ignore)
 }
 
 // Update a document by ID, without maintaining index.
 func (tc *Client) colUpdateNoIdx(colName string, id uint64, js map[string]interface{}) (err error) {
-	if serialized, err := json.Marshal(js); err != nil {
-		return err
-	} else {
-		return tc.getOK(fmt.Sprintf("%s %s %d %s", COL_UPDATE_NO_IDX, colName, id, string(serialized)))
+	var doc []byte
+	if doc, err = json.Marshal(js); err != nil {
+		return
 	}
+	return tc.Rpc.Call("Server.ColUpdateNoIdx", ColUpdateNoIdxParams{colName, string(doc), id}, &ignore)
 }
 
 // Delete a document by ID, without maintaining index.
 func (tc *Client) colDeleteNoIdx(colName string, id uint64) (err error) {
-	return tc.getOK(fmt.Sprintf("%s %s %d", COL_DELETE_NO_IDX, colName, id))
+	return tc.Rpc.Call("Server.ColDeleteNoIdx", ColDeleteNoIdxParams{colName, id}, &ignore)
+}
+
+// Get a document by ID.
+func (tc *Client) colGetJSString(colName string, id uint64) (docJS string, err error) {
+	err = tc.Rpc.Call("Server.ColGet", ColGetParams{colName, id}, &docJS)
+	return
 }

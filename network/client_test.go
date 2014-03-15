@@ -37,23 +37,11 @@ func ClientConnect(t *testing.T) {
 
 func Pings(t *testing.T) {
 	for i := 0; i < 4; i++ {
-		if !(clients[i].SrvAddr == "/tmp/tiedot_test_ipc_tmp/"+strconv.Itoa(i) && clients[i].SrvRank == i && clients[i].Conn != nil && clients[i].IPCSrvTmpDir == "/tmp/tiedot_test_ipc_tmp") {
+		if !(clients[i].SrvAddr == "/tmp/tiedot_test_ipc_tmp/"+strconv.Itoa(i) && clients[i].SrvRank == i && clients[i].Rpc != nil && clients[i].IPCSrvTmpDir == "/tmp/tiedot_test_ipc_tmp") {
 			t.Fatal(clients[i])
 		}
-		if err2 := clients[i].getOK(PING); err2 != nil {
-			t.Fatal(err2)
-		}
-		if str, err2 := clients[i].getStr(PING); str != ACK || err2 != nil {
-			t.Fatal(str, err2)
-		}
-		if i, err2 := clients[i].getUint64(PING1); i != 1 || err2 != nil {
-			t.Fatal(i, err2)
-		}
-		if js, err2 := clients[i].getJSON(PING_JSON); js.([]interface{})[0].(string) != "OK" || err2 != nil {
-			t.Fatal(i, err2)
-		}
-		if _, err2 := clients[i].getStr(PING_ERR); fmt.Sprint(err2) != ERR+"this is an error" {
-			t.Fatal(err2)
+		if clients[i].Ping() != nil {
+			t.Fatal()
 		}
 	}
 }
