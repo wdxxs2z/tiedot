@@ -7,7 +7,6 @@ import (
 	"net/rpc"
 	"path"
 	"strconv"
-	"sync"
 	"time"
 )
 
@@ -16,7 +15,6 @@ type Client struct {
 	SrvAddr, IPCSrvTmpDir string
 	SrvRank               int
 	Rpc                   *rpc.Client
-	Mutex                 *sync.Mutex
 }
 
 // Create a connection to a tiedot IPC server.
@@ -28,8 +26,7 @@ func NewClient(ipcSrvTmpDir string, rank int) (tc *Client, err error) {
 	if err != nil {
 		return
 	}
-	tc = &Client{SrvAddr: addr, IPCSrvTmpDir: ipcSrvTmpDir, SrvRank: rank, Rpc: rpcClient,
-		Mutex: new(sync.Mutex)}
+	tc = &Client{SrvAddr: addr, IPCSrvTmpDir: ipcSrvTmpDir, SrvRank: rank, Rpc: rpcClient}
 	return
 }
 

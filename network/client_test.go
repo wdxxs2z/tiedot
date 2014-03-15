@@ -40,8 +40,8 @@ func Pings(t *testing.T) {
 		if !(clients[i].SrvAddr == "/tmp/tiedot_test_ipc_tmp/"+strconv.Itoa(i) && clients[i].SrvRank == i && clients[i].Rpc != nil && clients[i].IPCSrvTmpDir == "/tmp/tiedot_test_ipc_tmp") {
 			t.Fatal(clients[i])
 		}
-		if clients[i].Ping() != nil {
-			t.Fatal()
+		if err := clients[i].Ping(); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

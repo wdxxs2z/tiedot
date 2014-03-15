@@ -42,11 +42,10 @@ func TestNewServerTaskSubmit(t *testing.T) {
 		}
 	}
 	var sideEffect bool
-	promise := make(chan interface{})
-	if srvs[0].Submit(&Task{Ret: promise, Input: []string{"true"}, Fun: func(input []string) interface{} {
-		sideEffect = input[0] == "true"
-		return true
-	}}).(bool) != true || !sideEffect {
+	srvs[0].Submit(func() {
+		sideEffect = true
+	})
+	if !sideEffect {
 		t.Fatal("wrong result")
 	}
 	os.RemoveAll(wd)

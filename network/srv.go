@@ -19,11 +19,9 @@ const (
 	RETRY_EVERY           = 100 // milliseconds
 )
 
-// Tasks are queued on a server and executed one by one
 type Task struct {
-	Ret   chan interface{}           // Signal of function completion
-	Input []string                   // Task function input parameter
-	Fun   func([]string) interface{} // Task (function) with a return value type
+	Fun        func()
+	Completion chan bool
 }
 
 // Server state and structures.
@@ -64,9 +62,10 @@ func NewServer(rank, totalRank int, dbDir, tempDir string) (srv *Server, err err
 		TempDir:    tempDir, DBDir: dbDir,
 		InterRank:              make([]*Client, totalRank),
 		SchemaUpdateInProgress: true,
-		MainLoop:               make(chan *Task, 100)}
+		MainLoop:               make(chan *Task, 1000)}
 	// Create server socket
 	os.Remove(srv.ServerSock)
+	rpc.Register(srv)
 	srv.Listener, err = net.Listen("unix", srv.ServerSock)
 	if err != nil {
 		return
@@ -108,14 +107,16 @@ func (server *Server) Start() {
 		for server.SchemaUpdateInProgress {
 			time.Sleep(RETRY_EVERY * time.Millisecond)
 		}
-		(task.Ret) <- task.Fun(task.Input)
+		task.Fun()
+		task.Completion <- true
 	}
 }
 
 // Submit a task to the server and wait till its completion.
-func (server *Server) Submit(task *Task) interface{} {
-	server.MainLoop <- task
-	return <-(task.Ret)
+func (server *Server) Submit(fun func()) {
+	completion := make(chan bool, 1)
+	server.MainLoop <- &Task{Completion: completion, Fun: fun}
+	<-completion
 }
 
 // Broadcast a message to all other servers, return true on success.
