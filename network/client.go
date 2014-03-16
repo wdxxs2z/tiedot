@@ -2,7 +2,6 @@
 package network
 
 import (
-	"github.com/HouzuoGuo/tiedot/tdlog"
 	"math/rand"
 	"net/rpc"
 	"path"
@@ -33,5 +32,4 @@ func NewClient(ipcSrvTmpDir string, rank int) (tc *Client, err error) {
 // Close the connection, shutdown client. Remember to call this!
 func (tc *Client) ShutdownClient() {
 	(*tc.Rpc).Close()
-	tdlog.Printf("Client has shutdown the connection to %s", tc.SrvAddr)
 }

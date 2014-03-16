@@ -394,7 +394,7 @@ func (srv *Server) unindexDoc(colName string, docID uint64, doc interface{}) (er
 					srv.Htables[colName][indexPathStr].Remove(hashKey, docID)
 				} else {
 					// Go inter-rank: tell other rank to do the job
-					if err = srv.InterRank[partNum].htPut(colName, indexPathStr, hashKey, docID); err != nil {
+					if err = srv.InterRank[partNum].htDelete(colName, indexPathStr, hashKey, docID); err != nil {
 						return
 					}
 				}
@@ -482,7 +482,6 @@ func (srv *Server) ColUpdateNoIdx(in ColUpdateNoIdxParams, _ *bool) (err error) 
 		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) Client sent malformed JSON document", in.ColName))
 	}
 	partNum := int(in.DocID % uint64(srv.ColNumParts[in.ColName]))
-	var originalDoc interface{}
 	if partNum != srv.Rank {
 		return errors.New(fmt.Sprintf("(ColUpdateNoIdx %s) My rank does not own the document", in.ColName))
 	}
@@ -492,24 +491,13 @@ func (srv *Server) ColUpdateNoIdx(in ColUpdateNoIdxParams, _ *bool) (err error) 
 	// Read back the original document
 	partition := srv.ColParts[in.ColName]
 	var originalPhysicalID uint64
-	originalPhysicalID, err = srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
-	if err == nil {
-		partition.Read(originalPhysicalID, &originalDoc)
-	} else {
-		// The original document cannot be found - so we will insert the document instead of updating it
-		tdlog.Printf("(ColUpdate %s) Cannot find the original document %d, will insert the updated document instead", in.DocID, in.ColName)
-	}
-	// Overwrite the document
-	if originalDoc == nil {
-		// The original document cannot be found, so we do "repair" update
-		if _, err = partition.Insert(newDoc); err != nil {
-			return
-		}
-	} else {
+	if originalPhysicalID, err = partition.GetPhysicalID(in.DocID); err == nil {
 		// Ordinary update
-		if _, err = srv.ColParts[in.ColName].Update(originalPhysicalID, newDoc); err != nil {
-			return
-		}
+		_, err = partition.Update(originalPhysicalID, newDoc)
+	} else {
+		// The original document cannot be found, so we do "repair" update
+		_, err = partition.Insert(newDoc)
+		tdlog.Printf("(ColUpdateNoIdx %s) Repair update on %d", in.ColName, in.DocID)
 	}
 	return
 }
@@ -530,32 +518,29 @@ func (srv *Server) ColUpdate(in ColUpdateParams, _ *bool) (err error) {
 		return errors.New(fmt.Sprintf("(ColUpdate %s) Client sent malformed JSON document", in.ColName))
 	}
 	partNum := int(in.DocID % uint64(srv.ColNumParts[in.ColName]))
+	// Make sure that client is not overwriting document ID
+	newDoc[uid.PK_NAME] = strconv.FormatUint(in.DocID, 10)
 	var originalDoc interface{}
 	if partNum == srv.Rank {
 		// Now my rank owns the document and go ahead to update the document
 		// Make sure that client is not overwriting document ID
 		newDoc[uid.PK_NAME] = strconv.FormatUint(in.DocID, 10)
-		// Read back the original document
+		// Find the physical ID of the original document, and read back the document content
 		partition := srv.ColParts[in.ColName]
 		var originalPhysicalID uint64
-		originalPhysicalID, err = srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
-		if err == nil {
-			partition.Read(originalPhysicalID, &originalDoc)
-		} else {
-			// The original document cannot be found - so we will insert the document instead of updating it
-			tdlog.Printf("(ColUpdate %s) Cannot find the original document %d, will insert the updated document instead", in.DocID, in.ColName)
-		}
-		// Overwrite the document
-		if originalDoc == nil {
-			// The original document cannot be found, so we do "repair" update
-			if _, err = partition.Insert(newDoc); err != nil {
-				return
+		if originalPhysicalID, err = partition.GetPhysicalID(in.DocID); err == nil {
+			if err = partition.Read(originalPhysicalID, &originalDoc); err != nil {
+				tdlog.Printf("(ColUpdate %s) Cannot read back %d, will continue document update anyway", in.ColName, in.DocID)
 			}
-		} else {
 			// Ordinary update
-			if _, err = srv.ColParts[in.ColName].Update(originalPhysicalID, newDoc); err != nil {
-				return
-			}
+			_, err = partition.Update(originalPhysicalID, newDoc)
+		} else {
+			// The original document cannot be found, so we do "repair" update
+			tdlog.Printf("(ColUpdate %s) Repair update on %d", in.ColName, in.DocID)
+			_, err = partition.Insert(newDoc)
+		}
+		if err != nil {
+			return
 		}
 	} else {
 		// If my rank does not own the document, coordinate this update with other ranks, and to prevent deadlock...
@@ -569,9 +554,10 @@ func (srv *Server) ColUpdate(in ColUpdateParams, _ *bool) (err error) {
 		}
 	}
 	// No matter where the document is physically located at, my rank always coordinates index maintenance
-	if err = srv.unindexDoc(in.ColName, in.DocID, originalDoc); err != nil {
-		tdlog.Printf("ERROR Unindex doc %v %v %v", in.ColName, in.DocID, originalDoc)
-		return
+	if originalDoc != nil {
+		if err = srv.unindexDoc(in.ColName, in.DocID, originalDoc); err != nil {
+			return
+		}
 	}
 	return srv.indexDoc(in.ColName, in.DocID, newDoc)
 }
@@ -588,23 +574,20 @@ func (srv *Server) ColDeleteNoIdx(in ColDeleteNoIdxParams, _ *bool) (err error) 
 		return errors.New(fmt.Sprintf("(ColDeleteNoIdx %s) Collection does not exist", in.ColName))
 	}
 	partNum := int(in.DocID % uint64(srv.ColNumParts[in.ColName]))
-	var originalDoc interface{}
 	if partNum != srv.Rank {
 		return errors.New(fmt.Sprintf("(ColDeleteNoIdx %s) My rank does not own the document", in.ColName))
 	}
 	// Now my rank owns the document and go ahead to delete the document
-	// Read back the original document
 	partition := srv.ColParts[in.ColName]
+	// Find the physical ID of the document
 	var originalPhysicalID uint64
-	originalPhysicalID, err = srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
-	if err == nil {
-		partition.Read(originalPhysicalID, &originalDoc)
-	} else {
+	originalPhysicalID, err = partition.GetPhysicalID(in.DocID)
+	if err != nil {
 		// The original document cannot be found - so it has already been deleted
 		return nil
 	}
 	// Delete the document
-	srv.ColParts[in.ColName].Delete(originalPhysicalID)
+	partition.Delete(originalPhysicalID)
 	return
 }
 
@@ -626,16 +609,23 @@ func (srv *Server) ColDelete(in ColDeleteNoIdxParams, _ *bool) (err error) {
 		// Read back the original document
 		partition := srv.ColParts[in.ColName]
 		var originalPhysicalID uint64
-		originalPhysicalID, err = srv.ColParts[in.ColName].GetPhysicalID(in.DocID)
+		originalPhysicalID, err = partition.GetPhysicalID(in.DocID)
 		if err == nil {
-			partition.Read(originalPhysicalID, &originalDoc)
+			if err = partition.Read(originalPhysicalID, &originalDoc); err != nil {
+				tdlog.Printf("(ColDelete %s) Cannot read back %d, will continue to delete anyway", in.ColName, in.DocID)
+			}
 		} else {
 			// The original document cannot be found - so it has already been deleted
 			return nil
 		}
 		// Delete the document
-		srv.ColParts[in.ColName].Delete(originalPhysicalID)
+		partition.Delete(originalPhysicalID)
 	} else {
+		// If my rank does not own the document, coordinate this update with other ranks, and to prevent deadlock...
+		// Contact other rank to get document content
+		if originalDoc, err = srv.InterRank[partNum].ColGet(in.ColName, in.DocID); err != nil {
+			return
+		}
 		if err = srv.InterRank[partNum].colDeleteNoIdx(in.ColName, in.DocID); err != nil {
 			return
 		}

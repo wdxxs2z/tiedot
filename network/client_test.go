@@ -259,11 +259,11 @@ func DocCRUD2(t *testing.T) {
 		t.Fatal()
 	}
 	var err error
-	numDocs := 10
+	numDocs := 100
 	docIDs := make([]uint64, numDocs)
 	// Insert some documents
 	for i := 0; i < numDocs; i++ {
-		if docIDs[i], err = clients[rand.Intn(NUM_SERVERS)].ColInsert("a", map[string]interface{}{"attr": i}); err != nil {
+		if docIDs[i], err = clients[rand.Intn(NUM_SERVERS)].ColInsert("a", map[string]interface{}{"attr": i, "ext ra": "a bcd"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -276,7 +276,7 @@ func DocCRUD2(t *testing.T) {
 	}
 	// Update each of them
 	for i := 0; i < numDocs; i++ {
-		if err = clients[rand.Intn(NUM_SERVERS)].ColUpdate("a", docIDs[i], map[string]interface{}{"attr": i * 2}); err != nil {
+		if err = clients[rand.Intn(NUM_SERVERS)].ColUpdate("a", docIDs[i], map[string]interface{}{"attr": i * 2, "ex tra": nil}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -309,9 +309,9 @@ func DocCRUD2(t *testing.T) {
 func DocIndexing(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
 	var err error
-	numDocs := 10
+	numDocs := 100
 	numDocsPerIter := 7 // do not change
-	numParts := 2
+	numParts := 3
 	docIDs := make([]uint64, numDocs*numDocsPerIter)
 	if err = clients[0].ColCreate("index", numParts); err != nil {
 		t.Fatal(err)
@@ -368,6 +368,7 @@ func DocIndexing(t *testing.T) {
 	}
 	// Test every indexed entry
 	for i := 0; i < numDocs; i++ {
+		// Test new values
 		for j := 0; j < 3; j++ {
 			// Figure out where the index value went
 			theDocID := docIDs[i*numDocsPerIter+j]
@@ -380,6 +381,23 @@ func DocIndexing(t *testing.T) {
 			}
 			if !(len(vals) == 1 && vals[0] == theDocID) {
 				t.Fatal(i, j, theDocID, hashKey, partNum, vals)
+			}
+		}
+		// Old values are gone
+		for j := 0; j < 3; j++ {
+			// Figure out where the index value went
+			theDocID := docIDs[i*numDocsPerIter+j]
+			hashKey := colpart.StrHash(fmt.Sprint((j * numDocs) + (i + 1)))
+			partNum := int(hashKey % uint64(numParts))
+			// Fetch index value by key
+			vals, err := clients[partNum].htGet("index", "a,b", hashKey, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, val := range vals {
+				if val == theDocID {
+					t.Fatal(i, j, theDocID, hashKey, partNum, vals)
+				}
 			}
 		}
 	}

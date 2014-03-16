@@ -124,6 +124,11 @@ func (srv *Server) broadcast(call func(*Client) error, onErrResume bool) (err er
 	return
 }
 
+// Broadcast a message to all other servers,
+func (srv *Server) broadcastNoBlock(call func(*Client) error, timeout time.Duration) {
+
+}
+
 // Flush all buffers.
 func (srv *Server) flush() error {
 	for _, part := range srv.ColParts {
@@ -229,14 +234,24 @@ func (srv *Server) reload() (err error) {
 
 // Shutdown server and delete domain socket file.
 func (srv *Server) Shutdown(_ bool, _ *bool) error {
-	srv.broadcast(func(client *Client) error {
+	srv.FlushAll(false, nil)
+	/*
+		Recursive broadcast is harmful, unfortunately this has to be worked around.
+		The workaround takes two steps to shutdown this server and all other servers:
+		1. Broadcast shutdown message to all other ranks
+		- in the meanwhile -
+		2. Schedule process exit in 1 second
+	*/
+	go srv.broadcast(func(client *Client) error {
 		client.ShutdownServer()
 		return nil
 	}, true)
-	srv.FlushAll(false, nil)
-	os.Remove(srv.ServerSock)
-	tdlog.Printf("Rank %d: Shutdown upon client request", srv.Rank)
-	os.Exit(0)
+	go func() {
+		time.Sleep(1 * time.Second)
+		tdlog.Printf("Rank %d: Shutdown upon client request", srv.Rank)
+		os.Remove(srv.ServerSock)
+		os.Exit(0)
+	}()
 	return nil
 }
 
