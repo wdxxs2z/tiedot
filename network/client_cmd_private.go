@@ -11,11 +11,11 @@ var ignore bool
 
 // Insert a document. (Use ColInsert as the public API).
 func (tc *Client) docInsert(colName string, doc map[string]interface{}) (id uint64, err error) {
-	if js, err := json.Marshal(doc); err != nil {
+	var js []byte
+	if js, err = json.Marshal(doc); err != nil {
 		return 0, errors.New(fmt.Sprintf("Client cannot serialize structure %v, error: %v", doc, err))
-	} else {
-		err = tc.Rpc.Call("Server.DocInsert", DocInsertParams{colName, string(js)}, &id)
 	}
+	err = tc.Rpc.Call("Server.DocInsert", DocInsertParams{colName, string(js)}, &id)
 	return
 }
 
@@ -31,11 +31,11 @@ func (tc *Client) docGet(colName string, id uint64) (doc interface{}, err error)
 
 // Update a document by ID. (Use ColUpdate as the public API).
 func (tc *Client) docUpdate(colName string, id uint64, newDoc map[string]interface{}) (newID uint64, err error) {
-	if js, err := json.Marshal(newDoc); err != nil {
+	var js []byte
+	if js, err = json.Marshal(newDoc); err != nil {
 		return 0, errors.New(fmt.Sprintf("Client cannot serialize structure %v, error: %v", newDoc, err))
-	} else {
-		err = tc.Rpc.Call("Server.DocUpdate", DocUpdateParams{colName, string(js), id}, &newID)
 	}
+	err = tc.Rpc.Call("Server.DocUpdate", DocUpdateParams{colName, string(js), id}, &newID)
 	return
 }
 

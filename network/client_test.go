@@ -127,13 +127,13 @@ func DocCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	// doc update
-	if _, err = clients[0].docUpdate("a", 12345, map[string]interface{}{"content": "a"}); err == nil {
+	if _, err = clients[0].docUpdate("a", 12345, map[string]interface{}{uid.PK_NAME: "765", "content": "a"}); err == nil {
 		t.Fatal()
 	}
-	if docIDs[0], err = clients[0].docUpdate("a", docIDs[0], map[string]interface{}{"content": "a"}); err != nil {
+	if docIDs[0], err = clients[0].docUpdate("a", docIDs[0], map[string]interface{}{uid.PK_NAME: "765", "content": "a"}); err != nil {
 		t.Fatal(err)
 	}
-	if docIDs[1], err = clients[1].docUpdate("a", docIDs[1], map[string]interface{}{"content": "b"}); err != nil {
+	if docIDs[1], err = clients[1].docUpdate("a", docIDs[1], map[string]interface{}{uid.PK_NAME: "987", "content": "b"}); err != nil {
 		t.Fatal(err)
 	}
 	if doc, err := clients[0].docGet("a", docIDs[0]); err != nil || doc.(map[string]interface{})["content"].(string) != "a" {
@@ -361,7 +361,6 @@ func DocIndexing(t *testing.T) {
 			map[string]interface{}{"a": []interface{}{map[string]interface{}{"b": nil, "extra": "abc"}, "bcd"}, "extra": "cde"},
 			map[string]interface{}{"a": []interface{}{map[string]interface{}{"b": []interface{}{nil}, "extra": "abc"}, "bcd"}, "extra": "cde"}}
 		for j, doc := range docs {
-			fmt.Println(i, j)
 			if err = clients[rand.Intn(NUM_SERVERS)].ColUpdate("index", docIDs[i*numDocsPerIter+j], doc); err != nil {
 				t.Fatal(err)
 			}

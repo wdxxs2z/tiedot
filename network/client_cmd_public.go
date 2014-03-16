@@ -21,7 +21,6 @@ func (tc *Client) ColCreate(name string, numParts int) error {
 
 // Get all collection information (collection name VS number of partitions).
 func (tc *Client) ColAll() (all map[string]int, err error) {
-	all = make(map[string]int)
 	err = tc.Rpc.Call("Server.ColAll", false, &all)
 	return
 }
@@ -54,11 +53,11 @@ func (tc *Client) IdxDrop(colName, idxPath string) error {
 
 // Insert a document, return its ID.
 func (tc *Client) ColInsert(colName string, js map[string]interface{}) (id uint64, err error) {
-	if serialized, err := json.Marshal(js); err != nil {
-		return 0, err
-	} else {
-		err = tc.Rpc.Call("Server.ColInsert", ColInsertParams{colName, string(serialized)}, &id)
+	var serialized []byte
+	if serialized, err = json.Marshal(js); err != nil {
+		return
 	}
+	err = tc.Rpc.Call("Server.ColInsert", ColInsertParams{colName, string(serialized)}, &id)
 	return
 }
 
@@ -74,11 +73,11 @@ func (tc *Client) ColGet(colName string, id uint64) (doc interface{}, err error)
 
 // Update a document by ID.
 func (tc *Client) ColUpdate(colName string, id uint64, js map[string]interface{}) (err error) {
-	if serialized, err := json.Marshal(js); err != nil {
-		return err
-	} else {
-		return tc.Rpc.Call("Server.ColUpdate", ColUpdateParams{colName, string(serialized), id}, &ignore)
+	var serialized []byte
+	if serialized, err = json.Marshal(js); err != nil {
+		return
 	}
+	return tc.Rpc.Call("Server.ColUpdate", ColUpdateParams{colName, string(serialized), id}, &ignore)
 }
 
 // Delete a document by ID.

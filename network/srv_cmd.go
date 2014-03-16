@@ -67,6 +67,7 @@ func (srv *Server) ColCreate(in ColCreateParams, _ *bool) (err error) {
 
 // Return all collection name VS number of partitions in JSON.
 func (srv *Server) ColAll(_ bool, out *map[string]int) (neverErr error) {
+	*out = make(map[string]int)
 	return srv.submit(func() error {
 		for k, v := range srv.ColNumParts {
 			(*out)[k] = v
@@ -200,7 +201,6 @@ func (srv *Server) DocUpdate(in DocUpdateParams, out *uint64) (err error) {
 		if err = json.Unmarshal([]byte(in.JsonDoc), &doc); err != nil {
 			return
 		}
-		doc[uid.PK_NAME] = strconv.FormatUint(in.ID, 10) // client is not supposed to change UID, just to make sure
 		if *out, err = col.Update(in.ID, doc); err != nil {
 			return
 		}
@@ -488,7 +488,7 @@ func (srv *Server) ColUpdateNoIdx(in ColUpdateNoIdxParams, _ *bool) (err error) 
 	}
 	// Now my rank owns the document and go ahead to update the document
 	// Make sure that client is not overwriting document ID
-	newDoc[uid.PK_NAME] = in.DocID
+	newDoc[uid.PK_NAME] = strconv.FormatUint(in.DocID, 10)
 	// Read back the original document
 	partition := srv.ColParts[in.ColName]
 	var originalPhysicalID uint64
@@ -534,7 +534,7 @@ func (srv *Server) ColUpdate(in ColUpdateParams, _ *bool) (err error) {
 	if partNum == srv.Rank {
 		// Now my rank owns the document and go ahead to update the document
 		// Make sure that client is not overwriting document ID
-		newDoc[uid.PK_NAME] = in.DocID
+		newDoc[uid.PK_NAME] = strconv.FormatUint(in.DocID, 10)
 		// Read back the original document
 		partition := srv.ColParts[in.ColName]
 		var originalPhysicalID uint64
