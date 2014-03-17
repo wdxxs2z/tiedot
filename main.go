@@ -27,7 +27,7 @@ func main() {
 
 	// Benchmark flags
 	var benchSize int
-	flag.IntVar(&benchSize, "benchsize", 50000, "number of iterations in individual benchmark measure")
+	flag.IntVar(&benchSize, "benchsize", 100000, "number of iterations in individual benchmark measure")
 
 	flag.Parse()
 	switch mode {
