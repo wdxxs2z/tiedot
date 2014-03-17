@@ -309,7 +309,7 @@ func DocCRUD2(t *testing.T) {
 func DocIndexing(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
 	var err error
-	numDocs := 100
+	numDocs := 10000
 	numDocsPerIter := 7 // do not change
 	numParts := 3
 	docIDs := make([]uint64, numDocs*numDocsPerIter)

@@ -175,7 +175,7 @@ func (srv *Server) reload() (err error) {
 			}
 			numchunks, err := strconv.Atoi(string(numchunksContent))
 			if err != nil || numchunks < 1 {
-				tdlog.Panicf("Rank %d: Cannot figure out number of chunks for collection %s, manually repair it maybe? %v", srv.Rank, srv.DBDir, err)
+				tdlog.Panicf("Rank %d: Cannot figure out number of chunks for collection %s, manually repair it maybe? numchunks: %d, err: %v", srv.Rank, srv.DBDir, numchunks, err)
 			}
 			srv.ColNumParts[colName] = numchunks
 			srv.ColIndexPath[colName] = make([][]string, 0, 0)

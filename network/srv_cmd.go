@@ -41,6 +41,9 @@ func (srv *Server) ColCreate(in ColCreateParams, _ *bool) (err error) {
 	if in.NumParts > srv.TotalRank {
 		return errors.New(fmt.Sprintf("(ColCreate %s) There are not enough processes running", in.ColName))
 	}
+	if in.NumParts < 1 {
+		return errors.New(fmt.Sprintf("(ColCreate %s) Number of collection partitions must be greater than 0, %d given", in.ColName, in.NumParts))
+	}
 	return srv.submit(func() (err error) {
 		// Make new files and directories for the collection
 		if err = os.MkdirAll(path.Join(srv.DBDir, in.ColName), 0700); err != nil {
