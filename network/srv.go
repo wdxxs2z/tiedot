@@ -19,14 +19,16 @@ import (
 )
 
 const (
-	INTER_RANK_CONN_RETRY = 20
-	RETRY_EVERY           = 100 // milliseconds
+	INTER_RANK_CONN_RETRY   = 20  // Maximum retry for establishing inter-rank communication
+	INTER_RANK_RETRY_EVERY  = 100 // Inter-rank connection retry interval in milliseconds
+	SERVER_LOOP_RETRY_EVERY = 100 // Retry interval (in milliseconds) for waiting for schema updates in main server loop
 )
 
+// A task submitted to server loop
 type Task struct {
 	Fun        func() error
-	Completion chan bool
-	Err        error
+	Completion chan bool // Signaled upon completion of function execution
+	Err        error     // Error returned by the function
 }
 
 // Server state and structures.
@@ -44,7 +46,7 @@ type Server struct {
 	Htables     map[string]map[string]*dstruct.HashTable // Collection name -> index name -> hash table
 	Listener    net.Listener                             // This server socket
 	InterRank   []*Client                                // Inter-rank communication connection
-	MainLoop    chan *Task                               // Task loop
+	MainLoop    chan *Task                               // The main server loop for command processing
 	ConnCounter int
 }
 
@@ -67,7 +69,7 @@ func NewServer(rank, totalRank int, dbDir, tempDir string) (srv *Server, err err
 		TempDir:    tempDir, DBDir: dbDir,
 		SchemaUpdateInProgress: true,
 		InterRank:              make([]*Client, totalRank),
-		MainLoop:               make(chan *Task, 1000)}
+		MainLoop:               make(chan *Task, 100)}
 	// Create server socket
 	os.Remove(srv.ServerSock)
 	rpc.Register(srv)
@@ -92,7 +94,7 @@ func NewServer(rank, totalRank int, dbDir, tempDir string) (srv *Server, err err
 			if srv.InterRank[i], err = NewClient(tempDir, i); err == nil {
 				break
 			} else {
-				time.Sleep(RETRY_EVERY * time.Millisecond)
+				time.Sleep(INTER_RANK_RETRY_EVERY * time.Millisecond)
 			}
 		}
 	}
@@ -122,11 +124,6 @@ func (srv *Server) broadcast(call func(*Client) error, onErrResume bool) (err er
 		}
 	}
 	return
-}
-
-// Broadcast a message to all other servers,
-func (srv *Server) broadcastNoBlock(call func(*Client) error, timeout time.Duration) {
-
 }
 
 // Flush all buffers.
@@ -232,26 +229,25 @@ func (srv *Server) reload() (err error) {
 	return
 }
 
-// Shutdown server and delete domain socket file.
-func (srv *Server) Shutdown(_ bool, _ *bool) error {
+// Shutdown other servers, then shutdown myself.
+func (srv *Server) ShutdownAll(_ bool, _ *bool) error {
 	srv.FlushAll(false, nil)
-	/*
-		Recursive broadcast is harmful, unfortunately this has to be worked around.
-		The workaround takes two steps to shutdown this server and all other servers:
-		1. Broadcast shutdown message to all other ranks
-		- in the meanwhile -
-		2. Schedule process exit in 1 second
-	*/
-	go srv.broadcast(func(client *Client) error {
-		client.ShutdownServer()
+	srv.broadcast(func(client *Client) error {
+		client.shutdownServerOneRankOnly()
 		return nil
 	}, true)
-	go func() {
-		time.Sleep(1 * time.Second)
-		tdlog.Printf("Rank %d: Shutdown upon client request", srv.Rank)
-		os.Remove(srv.ServerSock)
-		os.Exit(0)
-	}()
+	tdlog.Printf("Rank %d: Shutdown upon client request", srv.Rank)
+	os.Remove(srv.ServerSock)
+	os.Exit(0)
+	return nil
+}
+
+// Shutdown my server only - do not shutdown the others.
+func (srv *Server) ShutdownMe(_ bool, _ *bool) error {
+	srv.FlushAll(false, nil)
+	tdlog.Printf("Rank %d: Shutdown upon client request", srv.Rank)
+	os.Remove(srv.ServerSock)
+	os.Exit(0)
 	return nil
 }
 
@@ -262,7 +258,7 @@ func (server *Server) Start() {
 	for {
 		task := <-server.MainLoop
 		for server.SchemaUpdateInProgress {
-			time.Sleep(RETRY_EVERY * time.Millisecond)
+			time.Sleep(SERVER_LOOP_RETRY_EVERY * time.Millisecond)
 		}
 		task.Err = task.Fun()
 		task.Completion <- true

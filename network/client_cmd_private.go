@@ -60,7 +60,7 @@ func (tc *Client) htDelete(colName, indexName string, key, val uint64) error {
 	return tc.Rpc.Call("Server.HTDelete", HTDeleteParams{colName, indexName, key, val}, &ignore)
 }
 
-// Update a document by ID, without maintaining index.
+// Update a document by ID, without maintaining index (use ColUpdate as the public API).
 func (tc *Client) colUpdateNoIdx(colName string, id uint64, js map[string]interface{}) (err error) {
 	var doc []byte
 	if doc, err = json.Marshal(js); err != nil {
@@ -69,13 +69,13 @@ func (tc *Client) colUpdateNoIdx(colName string, id uint64, js map[string]interf
 	return tc.Rpc.Call("Server.ColUpdateNoIdx", ColUpdateNoIdxParams{colName, string(doc), id}, &ignore)
 }
 
-// Delete a document by ID, without maintaining index.
+// Delete a document by ID, without maintaining index (use ColDelete as the public API).
 func (tc *Client) colDeleteNoIdx(colName string, id uint64) (err error) {
 	return tc.Rpc.Call("Server.ColDeleteNoIdx", ColDeleteNoIdxParams{colName, id}, &ignore)
 }
 
-// Get a document by ID.
-func (tc *Client) colGetJSString(colName string, id uint64) (docJS string, err error) {
-	err = tc.Rpc.Call("Server.ColGet", ColGetParams{colName, id}, &docJS)
-	return
+// Shutdown the server rank, without affecting other ranks, and shutdown this client as well (use ShutdownServer as the public API).
+func (tc *Client) shutdownServerOneRankOnly() {
+	tc.Rpc.Call("Server.ShutdownMe", false, &ignore)
+	tc.ShutdownClient()
 }

@@ -461,7 +461,7 @@ func (srv *Server) ColGet(in ColGetParams, out *string) (err error) {
 			return err
 		}
 	} else {
-		*out, err = srv.InterRank[partNum].colGetJSString(in.ColName, in.DocID)
+		*out, err = srv.InterRank[partNum].ColGetJS(in.ColName, in.DocID)
 	}
 	return
 }

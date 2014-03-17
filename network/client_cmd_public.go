@@ -61,13 +61,19 @@ func (tc *Client) ColInsert(colName string, js map[string]interface{}) (id uint6
 	return
 }
 
-// Get a document by ID.
+// Get a document (data structure) by ID.
 func (tc *Client) ColGet(colName string, id uint64) (doc interface{}, err error) {
 	var js string
 	if err = tc.Rpc.Call("Server.ColGet", ColGetParams{colName, id}, &js); err != nil {
 		return
 	}
 	err = json.Unmarshal([]byte(js), &doc)
+	return
+}
+
+// Get a document (JSON string) by ID.
+func (tc *Client) ColGetJS(colName string, id uint64) (docJS string, err error) {
+	err = tc.Rpc.Call("Server.ColGet", ColGetParams{colName, id}, &docJS)
 	return
 }
 

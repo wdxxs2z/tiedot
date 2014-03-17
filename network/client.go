@@ -29,7 +29,7 @@ func NewClient(ipcSrvTmpDir string, rank int) (tc *Client, err error) {
 	return
 }
 
-// Close the connection, shutdown client. Remember to call this!
+// Close the server connection and shutdown client.
 func (tc *Client) ShutdownClient() {
 	(*tc.Rpc).Close()
 }
