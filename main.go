@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"github.com/HouzuoGuo/tiedot/network"
 	"github.com/HouzuoGuo/tiedot/tdlog"
 	"math/rand"
@@ -62,6 +63,7 @@ func main() {
 			panic(err)
 		}
 		for i := 0; i < benchSize; i++ {
+			fmt.Println(i)
 			if _, err = client.ColInsert(BENCH_COL_NAME, map[string]interface{}{"a": map[string]interface{}{"b": rand.Intn(benchSize)}}); err != nil {
 				panic(err)
 			}
