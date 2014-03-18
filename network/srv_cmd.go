@@ -453,13 +453,14 @@ func (srv *Server) ColInsert(in ColInsertParams, out *uint64) (err error) {
 			}
 		} else {
 			// Tell other rank to do it
-			if _, err = srv.InterRank[partNum].docInsert(in.ColName, jsDoc); err != nil {
-				return err
-			}
+			//			srv.BgLoop <- func() (err error) {
+			//				_, err = srv.InterRank[partNum].docInsert(in.ColName, jsDoc)
+			//				return
+			//			}
 		}
-		if err := srv.indexDoc(in.ColName, docID, jsDoc); err != nil {
-			return err
-		}
+		//		srv.BgLoop <- func() error {
+		//			return srv.indexDoc(in.ColName, docID, jsDoc)
+		//		}
 		*out = docID
 		return
 	})

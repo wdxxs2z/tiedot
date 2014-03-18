@@ -47,6 +47,7 @@ type Server struct {
 	Listener    net.Listener                             // This server socket
 	InterRank   []*Client                                // Inter-rank communication connection
 	MainLoop    chan *Task                               // The main server loop for command processing
+	BgLoop      chan func() error                        // Background task loop
 	ConnCounter int
 }
 
@@ -69,7 +70,8 @@ func NewServer(rank, totalRank int, dbDir, tempDir string) (srv *Server, err err
 		TempDir:    tempDir, DBDir: dbDir,
 		SchemaUpdateInProgress: true,
 		InterRank:              make([]*Client, totalRank),
-		MainLoop:               make(chan *Task, 100)}
+		MainLoop:               make(chan *Task, 100),
+		BgLoop:                 make(chan func() error, 100)}
 	// Create server socket
 	os.Remove(srv.ServerSock)
 	rpc.Register(srv)
@@ -106,9 +108,9 @@ func NewServer(rank, totalRank int, dbDir, tempDir string) (srv *Server, err err
 }
 
 // Submit a task to the server and wait till its completion.
-func (server *Server) submit(fun func() error) error {
+func (srv *Server) submit(fun func() error) error {
 	task := &Task{Completion: make(chan bool, 1), Fun: fun}
-	server.MainLoop <- task
+	srv.MainLoop <- task
 	<-task.Completion
 	return task.Err
 }
@@ -254,7 +256,17 @@ func (srv *Server) ShutdownMe(_ bool, _ *bool) error {
 // Start task worker.
 func (server *Server) Start() {
 	tdlog.Printf("Rank %d: Now serving requests", server.Rank)
-	defer os.Remove(server.ServerSock)
+	go func() {
+		// Background task loop
+		defer os.Remove(server.ServerSock)
+		for {
+			task := <-server.BgLoop
+			if err := task(); err != nil {
+				tdlog.Errorf("(BgLoop) %v", err)
+			}
+		}
+	}()
+	// Foreground task loop
 	for {
 		task := <-server.MainLoop
 		for server.SchemaUpdateInProgress {
